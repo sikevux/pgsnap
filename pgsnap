@@ -1,0 +1,48 @@
+#!/bin/bash
+# You should probably change this
+BACKUPDIR=/opt/pgsnap
+
+if [ -z "$1" ]; then
+   echo "Usage: $0 db [extra opts]"
+   exit 1
+fi
+
+EXTRAOPTS="${*:2}"
+
+if pgrep -f pg_dump &> /dev/null; then
+   echo "pg_dump already running, so quitting"
+   exit 2
+fi
+
+DB="$1"
+
+FULLDBPATH="$BACKUPDIR/$DB"
+
+if [ ! -d "$FULLDBPATH" ]; then
+   mkdir -p "$FULLDBPATH" || sudo mkdir -p "$FULLDBPATH"
+fi
+
+cd "$FULLDBPATH" || exit 3
+
+if [ ! -d ".git" ]; then
+   git init &> /dev/null || exit 4
+   touch .gitignore
+   git add .gitignore
+   git commit -m "Initial commit" &> /dev/null || exit 5
+fi
+
+# Log times so that we can plot the data later on
+echo "start: $(date)" >> pgsnap.log
+
+# We want the EXTRAOPTS to expand
+pg_dump -s $EXTRAOPTS -f "${DB}_schema.sql" "$DB" || exit 6
+pg_dump -a $EXTRAOPTS -f "${DB}_data.sql" "$DB" || exit 7
+echo "end: $(date)" >> pgsnap.log
+
+git add "${DB}_schema.sql" "${DB}_data.sql" "pgsnap.log"
+git commit -m "Automagic backup made on the: $(date -I)" &> /dev/null || exit 8
+
+# Only push if we have a remote
+if [ ! -z "$(git remote &> /dev/null)" ]; then
+   git push || exit 9
+fi
