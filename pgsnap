@@ -35,8 +35,11 @@ fi
 echo "start: $(date)" >> pgsnap.log
 
 # We want the EXTRAOPTS to expand
+# shellcheck disable=SC2086
+{
 pg_dump -s $EXTRAOPTS -f "${DB}_schema.sql" "$DB" || exit 6
 pg_dump -a $EXTRAOPTS -f "${DB}_data.sql" "$DB" || exit 7
+}
 echo "end: $(date)" >> pgsnap.log
 
 git add "${DB}_schema.sql" "${DB}_data.sql" "pgsnap.log"
