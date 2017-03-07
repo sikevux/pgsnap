@@ -8,45 +8,81 @@ BACKUPDIR=/opt/pgsnap
 # You can also use env to override them
 USEGIT=${USEGIT:-1}
 USEXZ=${USEXZ:-0}
+USEGPG=${USEGPG:-0}
 EXTRAOPTS=${EXTRAOPTS:-''}
+
+GPG_KEYS_ENC=${GPG_KEYS_ENC:-'KEYS,TO,USE'}
+GPG_KEY=${GPG_KEY:-'MYKEY'}
+GPG_PW=${GPG_PW:-'MYKEYPASS'}
 
 # Basic sanity checks
 if [ -z "$1" ]; then
-    echo "Usage: $0 db [OPTION]..."
-    cat << 'EOF'
+	echo "Usage: $0 db [OPTION]..."
+	cat << 'EOF'
 
   -x	Use XZ for compressing, the number following sets the level of
-        compression to use. Can be set using USEXZ env
-  -g    Use git for VCS. Can be set using USEGIT env
-  -p    Extra arguments to pass to pg_dump. Can be set using EXTRAOPTS env
+		compression to use. Can be set using USEXZ env
+  -g	Use git for VCS. Can be set using USEGIT env
+  -p	Extra arguments to pass to pg_dump. Can be set using EXTRAOPTS env
 EOF
    exit 1
 fi
 
-while getopts x:g:p: OPTIONS; do
-    case "${OPTIONS}" in
+while getopts x:g:e:p: OPTIONS; do
+	case "${OPTIONS}" in
 	x) USEXZ="${OPTARG}";;
 	g) USEGIT="${OPTARG}";;
+	e) USEGPG="${OPTARG}";;
 	p) EXTRAOPTS="${OPTARG}";;
-    esac
+	esac
 done
 
 if [ ! -f "$(which pg_dump)" ]; then
-    echo "No pg_dump found in PATH"
-    exit 1
+	echo "No pg_dump found in $PATH"
+	exit 1
 fi
 
 if pgrep -f pg_dump &> /dev/null; then
-   echo "pg_dump already running, so quitting"
+   echo 'pg_dump already running, so quitting'
    exit 2
 fi
 
 
 if [[ $USEXZ -ge 1 ]]; then
-    if [ ! -f "$(which xz)" ]; then
-	echo "No xz found in PATH"
+	if [ ! -f "$(which xz)" ]; then
+	echo "No xz found in $PATH"
 	exit 1
-    fi
+	fi
+fi
+
+if [[ $USEGPG == 1 ]]; then
+	if [ ! -f "$(which gpg2)" ]; then
+		echo "No gpg2 found in $PATH"
+		exit 1
+	fi
+
+	if [ -z $GPG_KEYS_ENC ]; then
+		echo 'No recipient keys set.'
+		echo "Edit $0"
+		exit 1
+	fi
+
+	if [ -z $GPG_KEY ]; then
+		echo 'No encryption key set.'
+		echo "Edit $0"
+		exit 1
+	fi
+
+	if [ -z $GPG_PW ]; then
+		echo 'No password for the encryption key set.'
+		echo "Edit $0"
+		exit 1
+	fi
+
+	if ! gpg2 --list-secret-keys | grep -q "${GPG_KEY}"; then
+		echo 'Specified encryption key can not be found'
+		exit 1
+	fi
 fi
 
 
@@ -74,31 +110,39 @@ pg_dump -a $EXTRAOPTS -f "${DB}_data.sql" "$DB" || exit 7
 } &> /dev/null
 
 if [[ $USEGIT == 1 ]]; then
-    echo "Doing the git" >> pgsnap.log
-    if [ ! -d ".git" ]; then
+	echo "Doing the git" >> pgsnap.log
+	if [ ! -d ".git" ]; then
 	git init &> /dev/null || exit 4
 	touch .gitignore
 	git add .gitignore
 	git commit -m "Initial commit" &> /dev/null || exit 5
-    fi
+	fi
 
-    git add "${DB}_schema.sql" "${DB}_data.sql" "pgsnap.log"
-    git commit -m "Automagic backup made on: $(date -I)" &> /dev/null || exit 8
+	git add "${DB}_schema.sql" "${DB}_data.sql" "pgsnap.log"
+	git commit -m "Automagic backup made on: $(date -I)" &> /dev/null || exit 8
 
-    # Only push if we have a remote
-    if [ ! -z "$(git remote &> /dev/null)" ]; then
+	# Only push if we have a remote
+	if [ ! -z "$(git remote &> /dev/null)" ]; then
 	git push || exit 9
-    fi
+	fi
 fi
 
 if [[ $USEXZ -ge 1 ]]; then
-    echo "Compressing using: xz -${USEXZ}" >> pgsnap.log
-    USEXZ="-${USEXZ}"
-    # shellcheck disable=SC2086
-    {
-    xz ${USEXZ} "${DB}_schema.sql" || exit 10
-    xz ${USEXZ} "${DB}_data.sql" || exit 11
-    } &> /dev/null
+	echo "Compressing using: xz -${USEXZ}" >> pgsnap.log
+	USEXZ="-${USEXZ}"
+	# shellcheck disable=SC2086
+	{
+	xz ${USEXZ} "${DB}_schema.sql" || exit 10
+	xz ${USEXZ} "${DB}_data.sql" || exit 11
+	} &> /dev/null
+fi
+
+if [[ $USEGPG == 1 ]]; then
+	echo "Encrypting using GPG" >> pgsnap.log
+	echo "${GPG_PW}" | gpg2 -u "${GPG_KEY}" -r "${GPG_KEYS_ENC}" \
+							-e "${DB}_schema.sql" || exit 12
+	echo "${GPG_PW}" | gpg2 -u "${GPG_KEY}" -r "${GPG_KEYS_ENC}" \
+							-e "${DB}_data.sql" || exit 13
 fi
 
 echo "end: $(date)" >> pgsnap.log
