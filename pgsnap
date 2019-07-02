@@ -34,10 +34,11 @@ while getopts x:g:e:p: OPTIONS; do
 	g) USEGIT="${OPTARG}";;
 	e) USEGPG="${OPTARG}";;
 	p) EXTRAOPTS="${OPTARG}";;
+	*) exit 1;;
 	esac
 done
 
-if [ ! -f "$(which pg_dump)" ]; then
+if [ ! -f "$(command -v pg_dump)" ]; then
 	echo "No pg_dump found in $PATH"
 	exit 1
 fi
@@ -49,31 +50,31 @@ fi
 
 
 if [[ $USEXZ -ge 1 ]]; then
-	if [ ! -f "$(which xz)" ]; then
+	if [ ! -f "$(command -v xz)" ]; then
 	echo "No xz found in $PATH"
 	exit 1
 	fi
 fi
 
 if [[ $USEGPG == 1 ]]; then
-	if [ ! -f "$(which gpg2)" ]; then
+	if [ ! -f "$(command -v gpg2)" ]; then
 		echo "No gpg2 found in $PATH"
 		exit 1
 	fi
 
-	if [ -z $GPG_KEYS_ENC ]; then
+	if [ -z "${GPG_KEYS_ENC}" ]; then
 		echo 'No recipient keys set.'
 		echo "Edit $0"
 		exit 1
 	fi
 
-	if [ -z $GPG_KEY ]; then
+	if [ -z "${GPG_KEY}" ]; then
 		echo 'No encryption key set.'
 		echo "Edit $0"
 		exit 1
 	fi
 
-	if [ -z $GPG_PW ]; then
+	if [ -z "${GPG_PW}" ]; then
 		echo 'No password for the encryption key set.'
 		echo "Edit $0"
 		exit 1
@@ -122,7 +123,7 @@ if [[ $USEGIT == 1 ]]; then
 	git commit -m "Automagic backup made on: $(date -I)" &> /dev/null || exit 8
 
 	# Only push if we have a remote
-	if [ ! -z "$(git remote &> /dev/null)" ]; then
+	if [ -n "$(git remote &> /dev/null)" ]; then
 	git push || exit 9
 	fi
 fi
