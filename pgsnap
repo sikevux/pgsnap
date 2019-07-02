@@ -9,6 +9,8 @@ BACKUPDIR=${BACKUPDIR:-/opt/pgsnap}
 USEGIT=${USEGIT:-0}
 USEXZ=${USEXZ:-0}
 USEGPG=${USEGPG:-0}
+USES3=${USES3:-0}
+DONTSPLIT=${DONTSPLIT:-0}
 EXTRAOPTS=${EXTRAOPTS:-''}
 
 GPG_KEYS_ENC=${GPG_KEYS_ENC:-'KEYS,TO,USE'}
@@ -23,18 +25,21 @@ if [ -z "$1" ]; then
   -x	Use XZ for compressing, the number following sets the level of
 		compression to use. Can be set using USEXZ env
   -g	Use git for VCS. Can be set using USEGIT env
+  -s	Use S3. Can be set using USES3 env
+  -d	Don't split Data and Schema. Can be set using DONTSPLIT env
   -p	Extra arguments to pass to pg_dump. Can be set using EXTRAOPTS env
 EOF
-   exit 1
+	exit 1
 fi
 
-while getopts x:g:e:p: OPTIONS; do
+while getopts "x:gesdp:" OPTIONS; do
 	case "${OPTIONS}" in
-	x) USEXZ="${OPTARG}";;
-	g) USEGIT="${OPTARG}";;
-	e) USEGPG="${OPTARG}";;
-	p) EXTRAOPTS="${OPTARG}";;
-	*) exit 1;;
+		x) USEXZ="${OPTARG}";;
+		g) USEGIT=1;;
+		e) USEGPG=1;;
+		s) USES3=1;;
+		d) DONTSPLIT=1;;
+		p) EXTRAOPTS="${OPTARG}";;
 	esac
 done
 
@@ -46,15 +51,14 @@ if [ ! -f "$(command -v pg_dump)" ]; then
 fi
 
 if pgrep -f pg_dump &> /dev/null; then
-   echo 'pg_dump already running, so quitting'
-   exit 2
+	echo 'pg_dump already running, so quitting'
+	exit 2
 fi
-
 
 if [[ $USEXZ -ge 1 ]]; then
 	if [ ! -f "$(command -v xz)" ]; then
-	echo "No xz found in $PATH"
-	exit 1
+		echo "No xz found in $PATH"
+		exit 1
 	fi
 fi
 
@@ -88,14 +92,29 @@ if [[ $USEGPG == 1 ]]; then
 	fi
 fi
 
+if [[ $USES3 == 1 ]]; then
+	if [ ! -f "$(command -v aws)" ]; then
+		echo "No aws found in $PATH"
+		exit 1
+	fi
+
+	if [ -z "${BUCKET}" ]; then
+		echo 'No bucket set.'
+		exit 1
+	fi
+
+	if ! aws sts get-caller-identity &> /dev/null; then
+		echo 'Could not log in to AWS'
+		exit 1
+	fi
+fi
+
 
 DB="$1"
 FULLDBPATH="$BACKUPDIR/$DB"
 
-
-
 if [ ! -d "$FULLDBPATH" ]; then
-   mkdir -p "$FULLDBPATH" || sudo mkdir -p "$FULLDBPATH"
+	mkdir -p "$FULLDBPATH" || sudo mkdir -p "$FULLDBPATH"
 fi
 
 cd "$FULLDBPATH" || exit 3
@@ -106,19 +125,24 @@ touch pgsnap.log || sudo chown "$(id -un)" .
 echo "start: $(date)" >> pgsnap.log
 
 # We want the EXTRAOPTS to expand
-# shellcheck disable=SC2086
-{
-pg_dump -s $EXTRAOPTS -f "${DB}_schema.sql" "$DB" || exit 6
-pg_dump -a $EXTRAOPTS -f "${DB}_data.sql" "$DB" || exit 7
-} &> /dev/null
+if [[ $DONTSPLIT == 1 ]]; then
+	# shellcheck disable=SC2086
+	pg_dump $EXTRAOPTS -f "${DB}.sql" "$DB" || exit 6
+else
+	# shellcheck disable=SC2086
+	{
+	pg_dump -s $EXTRAOPTS -f "${DB}_schema.sql" "$DB" || exit 6
+	pg_dump -a $EXTRAOPTS -f "${DB}_data.sql" "$DB" || exit 7
+	} &> /dev/null
+fi
 
 if [[ $USEGIT == 1 ]]; then
 	echo "Doing the git" >> pgsnap.log
 	if [ ! -d ".git" ]; then
-	git init &> /dev/null || exit 4
-	touch .gitignore
-	git add .gitignore
-	git commit -m "Initial commit" &> /dev/null || exit 5
+		git init &> /dev/null || exit 4
+		touch .gitignore
+		git add .gitignore
+		git commit -m "Initial commit" &> /dev/null || exit 5
 	fi
 
 	git add "${DB}_schema.sql" "${DB}_data.sql" "pgsnap.log"
@@ -126,7 +150,7 @@ if [[ $USEGIT == 1 ]]; then
 
 	# Only push if we have a remote
 	if [ -n "$(git remote &> /dev/null)" ]; then
-	git push || exit 9
+		git push || exit 9
 	fi
 fi
 
@@ -146,6 +170,16 @@ if [[ $USEGPG == 1 ]]; then
 							-e "${DB}_schema.sql" || exit 12
 	echo "${GPG_PW}" | gpg2 -u "${GPG_KEY}" -r "${GPG_KEYS_ENC}" \
 							-e "${DB}_data.sql" || exit 13
+fi
+
+if [[ $USES3 == 1 ]]; then
+	echo "Pushing to S3" >> pgsnap.log
+	if [[ $DONTSPLIT == 1 ]]; then
+		aws s3 --sse  cp "${DB}.sql" "s3://${BUCKET}/${DB}-$(date +'%Y-%m').sql"
+	else
+		tar cf "${DB}-$(date +'%Y-%m').tar" "${DB}_schema.sql" "${DB}_data.sql"
+		aws s3 --sse cp "${DB}-$(date +'%Y-%m').tar" "s3://${BUCKET}/${DB}-$(date +'%Y-%m').tar"
+	fi
 fi
 
 echo "end: $(date)" >> pgsnap.log
