@@ -2,11 +2,11 @@
 # Seriously, bash
 
 # You should probably change this
-BACKUPDIR=/opt/pgsnap
+BACKUPDIR=${BACKUPDIR:-/opt/pgsnap}
 
 # These are defaults, you can change them with args
 # You can also use env to override them
-USEGIT=${USEGIT:-1}
+USEGIT=${USEGIT:-0}
 USEXZ=${USEXZ:-0}
 USEGPG=${USEGPG:-0}
 EXTRAOPTS=${EXTRAOPTS:-''}
@@ -37,6 +37,8 @@ while getopts x:g:e:p: OPTIONS; do
 	*) exit 1;;
 	esac
 done
+
+shift "$((OPTIND-1))"
 
 if [ ! -f "$(command -v pg_dump)" ]; then
 	echo "No pg_dump found in $PATH"
